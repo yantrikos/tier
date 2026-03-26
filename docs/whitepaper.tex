@@ -1,4 +1,4 @@
-\documentclass[11pt,twocolumn]{article}
+\documentclass[11pt]{article}
 
 \usepackage[margin=0.75in]{geometry}
 \usepackage{amsmath,amssymb}
@@ -29,7 +29,7 @@
 \title{\textbf{Tier-Based Adaptive Tool Routing for\\Capability-Heterogeneous AI Agents}}
 \author{%
   \textbf{Pranab Sarkar}\\
-  Yantrikos\\
+  Independent Researcher\\
   \texttt{developer@pranab.co.in}\\
   \url{https://github.com/spranab}\\[0.5em]
   \small ORCID: 0009-0009-8683-1481\\[1em]
@@ -38,20 +38,26 @@
 \date{Version 1.0.0 --- March 2026}
 
 \begin{document}
-\twocolumn[
-  \maketitle
-  \begin{center}
-    \rule{0.5\textwidth}{0.4pt}
-  \end{center}
-  \vspace{0.5em}
-  \begin{abstract}
-  \noindent Tool-using AI agents are deployed across models ranging from 1.5B to 35B+ parameters, yet frameworks present identical tool interfaces regardless of model capability. We evaluate seven adaptive presentation strategies across four models (1.5B--35B) with 80 tools using native tool calling APIs. A novel decomposition reveals that tool selection accuracy factors into \emph{family routing accuracy} and \emph{within-family selection accuracy}, where the latter is consistently high (89--98\%) across all model sizes. This means the tool selection problem is primarily a \textbf{family routing problem}. Our best strategies improve accuracy by +8--10pp while reducing prompt tokens by 83--92\%: hybrid presentation (8~detailed + 72~name-only tools) achieves 60\% for 1.5B models (+10pp), while semantic reordering with category hints achieves 88\% for 20B models (+8pp), matching 35B baseline performance. We validate these findings against a production system (YantrikOS) with 116+ tools, and release an open-source benchmark, SDK, and OpenClaw plugin. Benchmark data: 1,000+ inference calls across three experimental rounds.
 
-  \medskip
-  \noindent\textbf{Keywords:} tool use, function calling, small language models, adaptive routing, AI agents, model capability, YantrikDB
-  \end{abstract}
-  \vspace{1em}
-]
+\maketitle
+
+\begin{center}
+  \rule{0.5\textwidth}{0.4pt}
+\end{center}
+
+\begin{abstract}
+\noindent Tool-using AI agents are deployed across models ranging from 1.5B to 35B+ parameters, yet frameworks present identical tool interfaces regardless of model capability. We evaluate seven adaptive presentation strategies across four models (1.5B--35B) with 80 tools using native tool calling APIs. A novel decomposition reveals that tool selection accuracy factors into \emph{family routing accuracy} and \emph{within-family selection accuracy}, where the latter is consistently high (89--98\%) across all model sizes. This means the tool selection problem is primarily a \textbf{family routing problem}. Our best strategies improve accuracy by +8--10pp while reducing prompt tokens by 83--92\%: hybrid presentation (8~detailed + 72~name-only tools) achieves 60\% for 1.5B models (+10pp), while semantic reordering with category hints achieves 88\% for 20B models (+8pp), matching 35B baseline performance. We validate these findings against a production system (YantrikOS) with 116+ tools, and release an open-source benchmark, SDK, and OpenClaw plugin. Benchmark data: 1,000+ inference calls across three experimental rounds.
+
+\medskip
+\noindent\textbf{Keywords:} tool use, function calling, small language models, adaptive routing, AI agents, model capability, YantrikDB
+\end{abstract}
+
+\begin{center}
+  \rule{0.5\textwidth}{0.4pt}
+\end{center}
+
+\vspace{1em}
+\twocolumn
 
 % ======================================================================
 \section{Introduction}
@@ -425,9 +431,6 @@ P.~Sarkar, ``YantrikDB: A Cognitive Memory Engine for Persistent AI Systems,'' Z
 
 \bibitem{openai_fc}
 OpenAI, ``Function Calling and Structured Outputs,'' OpenAI API Documentation, 2024.
-
-\bibitem{sdf}
-P.~Sarkar, ``Convert Once, Consume Many: SDF for Cacheable, Typed Semantic Extraction from Web Pages,'' Zenodo, DOI:~10.5281/zenodo.18559223, 2026.
 
 \end{thebibliography}
 
