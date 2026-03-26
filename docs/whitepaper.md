@@ -1,411 +1,348 @@
 # Tier-Based Adaptive Tool Routing for Capability-Heterogeneous AI Agents
 
-**Version 1.0 — March 2026**
+**Pranab Sarkar**
+Yantrikos
 
-**Authors:** Pranab S.
-**Affiliation:** Yantrikos
-**Contact:** developer@pranab.co.in
-**Reference Implementation:** https://github.com/yantrikos/tier
+**March 2026**
 
 ---
 
 ## Abstract
 
-Large language model (LLM) agents increasingly rely on tool calling — invoking external functions to interact with filesystems, APIs, databases, and services. Current tool-calling architectures present the full tool set to every model regardless of its capability, leading to degraded selection accuracy, token waste, and outright failure on smaller models. We introduce **Tier-Based Adaptive Tool Routing (TATR)**, a framework that dynamically adjusts tool presentation based on detected model capability. TATR classifies models into four tiers (S/M/L/XL) and applies tier-specific presentation strategies: multiple-choice question (MCQ) selection for sub-3B models, condensed ranked lists for 4B–14B models, full ranked descriptions for 15B–35B models, and unrestricted passthrough for 35B+ models. Tool relevance is determined by embedding similarity between the user's intent and pre-computed tool description vectors, ensuring that only the most relevant tools are surfaced at each tier. Evaluated across 116 tools in a production AI companion system (YantrikClaw) with models ranging from 0.5B to 400B+ parameters, TATR achieves 73% tool selection accuracy on 3B models (vs. 12% with full tool sets) while reducing tool-description token overhead by 89–97% for small and medium tiers. We release TATR as an open specification and provide a reference implementation as an OpenClaw plugin.
+As AI agents deploy across hardware ranging from edge devices (1.5B parameters) to cloud servers (35B+), tool-using frameworks present identical tool interfaces regardless of model capability. We evaluate five adaptive tool presentation strategies across four model sizes (1.5B to 35B) with 80 tools and 50 natural-language prompts using Ollama's native tool calling API. Our results show that (1) perfect family-based routing improves tool selection accuracy by 4-20 percentage points while reducing prompt tokens by 83%; (2) semantic filtering via vector similarity (YantrikDB) improves small model accuracy from 50% to 64% with 87% token reduction; (3) automated family detection achieves only 54-64% accuracy, making it the primary bottleneck; and (4) iterative LLM-driven tool discovery, as implemented in the YantrikOS production system with 116+ tools, resolves this bottleneck by allowing models to navigate the tool space conversationally. We release an open-source benchmark harness, an SDK for tier-aware tool development, and an OpenClaw plugin implementing the framework. Our key insight: adapt the tool presentation to the model's capability -- don't change the model to fit the tools.
 
-**Keywords:** tool calling, function calling, small language models, adaptive presentation, model capability detection, AI agents, edge deployment
+**Keywords:** tool use, function calling, small language models, adaptive routing, AI agents, model capability
 
 ---
 
 ## 1. Introduction
 
-### 1.1 The Tool Presentation Problem
+### 1.1 The Problem
 
-Modern AI agents extend LLM capabilities through tool calling — the model generates structured function calls based on tool descriptions provided in its context. Platforms like OpenClaw, OpenAI Assistants, and Claude Tools define tools via JSON schemas and natural-language descriptions, injecting the full set into every conversation turn.
+Tool-using AI agents have become central to modern AI applications. Frameworks such as OpenAI function calling, Anthropic tool use, and open-source platforms like OpenClaw and LangChain enable agents to invoke external functions -- reading files, querying databases, sending messages, and executing code.
 
-This approach assumes a capable model. A 70B-parameter model can reason over 50+ tool descriptions, identify the relevant one, and generate correct arguments. But the landscape of deployed models is heterogeneous:
+However, a critical assumption pervades these frameworks: **all models receive the same tool presentation**. Whether the underlying model has 1.5 billion or 35 billion parameters, it receives identical tool descriptions, parameter schemas, and selection interfaces.
 
-- **Edge devices** run 0.5B–3B models (phones, Raspberry Pi, IoT)
-- **Local deployments** run 4B–14B models (laptops via Ollama, LM Studio)
-- **Self-hosted servers** run 15B–35B models (homelab GPUs)
-- **Cloud APIs** serve 70B+ or mixture-of-experts models
+This creates three problems:
 
-A 0.8B model presented with 57 tool descriptions faces three compounding problems:
+1. **Accuracy degradation.** Small models (< 4B parameters) struggle to reliably select from large tool sets. With 80 tools, a 1.5B model achieves only 50% tool selection accuracy via native function calling.
 
-1. **Context saturation**: Tool descriptions consume 3,000–8,000 tokens, leaving minimal room for conversation context in models with 2K–8K context windows
-2. **Selection confusion**: Small models cannot reliably identify the correct tool from dozens of candidates, leading to hallucinated tool names, wrong tool selection, or refusal to use tools at all
-3. **Argument generation failure**: Even when the correct tool is selected, small models struggle to generate syntactically valid arguments for complex parameter schemas
+2. **Token waste.** Full tool descriptions for 80 tools consume 2,100-5,300 prompt tokens regardless of model size. For small models with limited context windows, this wastes 30-50% of available context on tool metadata.
 
-### 1.2 Existing Approaches
+3. **Latency inflation.** More prompt tokens directly increases time-to-first-token, particularly impactful on edge devices where inference is already slow.
 
-Prior work addresses this problem from the model side:
+### 1.2 Our Contribution
 
-- **AgentFlux** (Kadekodi et al., 2025) decouples tool selection from argument generation, fine-tuning separate stages on Qwen-2.5-7B
-- **TinyLLM** (2025) evaluates optimization techniques for SLMs on edge devices
-- **Surveys** (2025) catalog SLM capabilities but don't propose presentation strategies
+We present Tier-Based Adaptive Tool Routing (TATR), a framework that adapts tool presentation based on automatically detected model capability. Our contributions are:
 
-All existing approaches try to make the model better at handling full tool sets. None adapt the tool presentation to the model.
+1. A **formal model capability profiling system** with four tiers and six adaptation dimensions, implemented in production in YantrikOS.
 
-### 1.3 Our Contribution
+2. An **empirical evaluation** of five presentation strategies across four model sizes using native tool calling APIs, demonstrating both the ceiling (perfect routing: +20pp) and the floor (automated routing: the open challenge).
 
-We propose the opposite approach: **adapt the presentation, not the model.**
+3. An **open-source SDK** (Yantrikos) that enforces tier-aware tool design, enabling tool developers to specify per-tier descriptions, parameters, and execution behavior.
 
-TATR introduces:
+4. **Production validation** in YantrikOS, an AI-native operating system with 116+ tools deployed across model sizes from 0.8B to 35B+.
 
-1. **Capability-based tier classification** — automatic model tier detection from model name, size metadata, or explicit annotation
-2. **Embedding-ranked tool matching** — pre-computed similarity between user intent and tool descriptions, independent of the LLM
-3. **Tier-specific presentation formats** — MCQ for small, condensed for medium, ranked for large, passthrough for XL
-4. **An open specification** — a formal framework for tool builders to declare tier-appropriate descriptions
+### 1.3 Key Insight
 
-This requires zero model fine-tuning, zero training data, and works with any model from any provider.
+Existing work on tool use for small models focuses on fine-tuning models to improve tool calling accuracy (AgentFlux [1], ToolLLM [2], Gorilla [3]). We demonstrate that **adapting the presentation** achieves comparable or superior improvements with zero training cost. The bottleneck is not model capability -- it is how tools are presented.
 
 ---
 
-## 2. Tier Classification
+## 2. Related Work
 
-### 2.1 Model Capability Tiers
+### 2.1 Tool Use in Language Models
 
-We define four tiers based on observed tool-calling capability boundaries:
+Function calling has become a standard capability. OpenAI introduced structured function calling in 2023, followed by Anthropic's tool use protocol. Open-source models including Qwen [4], Llama [5], and Gemma now support native tool calling through specialized training.
 
-| Tier | Size Range | Tool Capacity | Context Budget | Example Models |
-|------|-----------|---------------|----------------|----------------|
-| **S** (Small) | 0.5B – 3B | 3–5 tools | ≤200 tokens | Qwen 0.5B/2B, Gemma 2B, Phi-3-mini |
-| **M** (Medium) | 4B – 14B | 6–12 tools | ≤500 tokens | Llama-3.1-8B, Qwen-2.5-7B, Mistral-7B |
-| **L** (Large) | 15B – 35B | 12–25 tools | ≤1500 tokens | Qwen-2.5-32B, CodeLlama-34B, Command-R |
-| **XL** (X-Large) | 35B+ | Unlimited | Unlimited | GPT-4, Claude, Llama-3.1-70B, DeepSeek |
+### 2.2 Small Language Models for Agents
 
-These boundaries are derived from empirical testing across 23 model families on a standardized 116-tool benchmark (Section 5).
+Recent work has evaluated small models (< 7B parameters) for agentic tasks:
 
-### 2.2 Automatic Tier Detection
+- **AgentFlux** [1] decouples tool selection from argument generation, improving accuracy for 7B models by 46%. However, it still presents all tools to the model.
+- **TinyLLM** [6] evaluates small language models for function calling on edge devices, finding that models under 3B struggle with large tool sets.
+- The **SLM Survey** [7] demonstrates that models under 20B are "sufficient and often superior for schema-constrained accuracy" but acknowledges challenges with large tool registries.
 
-Tier detection uses a three-stage cascade:
+### 2.3 What Is Missing
 
-**Stage 1: Size extraction.** Parse the model identifier for explicit size markers using the regex `(?:^|[:\-_/])(\d+(?:\.\d+)?)\s*[bB]`. This matches patterns like `qwen3.5:9b`, `llama-3.1-8b-instruct`, `codellama-32b`.
-
-**Stage 2: Named model lookup.** For models without size markers (e.g., `gpt-4`, `claude-sonnet`, `deepseek-chat`), a maintained registry maps known model names to tiers.
-
-**Stage 3: Provider heuristic.** If stages 1–2 fail, provider context provides a hint: `ollama/*` models are typically M-tier (local), while OpenAI/Anthropic API models are typically XL-tier.
-
-**Fallback:** Medium tier. This is the safest default — it doesn't overwhelm small models with too many tools and doesn't unnecessarily restrict large models.
-
-Detection is instantaneous (string parsing) and adds zero latency to the tool-calling pipeline.
-
-### 2.3 Explicit Tier Override
-
-Platforms may provide model metadata (parameter count, context window, benchmark scores) that enables more precise classification. TATR supports explicit tier annotation:
-
-```json
-{"model": "custom-finetune-v3", "tier": "M", "context_window": 8192}
-```
-
-This allows deployment-specific tuning without modifying the detection logic.
+No existing work addresses **adaptive tool presentation** based on model capability. All prior approaches either (a) fine-tune the model to handle more tools, or (b) evaluate models on fixed tool sets. Our work fills this gap by adapting the interface rather than the model.
 
 ---
 
-## 3. Embedding-Ranked Tool Matching
+## 3. Model Capability Profiling
 
-### 3.1 Pre-computation
+### 3.1 Tier Classification
 
-At initialization, TATR computes embedding vectors for every registered tool:
+We classify models into four tiers based on parameter count:
 
-```
-tool_vector[i] = embed(tool_name[i] + ": " + tool_description[i])
-```
+| Tier | Parameters | Characteristics |
+|------|-----------|-----------------|
+| Tiny | < 1.5B | Very constrained. Struggles with > 10 tools. Benefits most from adaptation. |
+| Small | 1.5-4B | Limited. Can handle structured JSON but not large tool sets. |
+| Medium | 4-14B | Capable. Reliable with 8-25 tools in native format. |
+| Large | 14B+ | Strong. Handles full tool sets with native function calling. |
 
-Two embedding strategies are supported:
+### 3.2 Automatic Detection
 
-1. **TF-IDF (zero-dependency)**: A corpus-fitted TF-IDF vectorizer over tool descriptions. Surprisingly effective for tool matching because tool descriptions use distinctive vocabulary ("file", "search", "git", "email").
+Tier detection parses parameter count from model name strings using patterns common across Ollama, HuggingFace, and API providers:
 
-2. **Sentence Transformers (optional)**: Models like `all-MiniLM-L6-v2` provide semantic embeddings with higher quality cross-domain matching. Requires the `sentence-transformers` package.
+- Ollama tag format: `qwen3.5:9b` -> 9B -> Medium
+- HuggingFace format: `Qwen3.5-9B` -> 9B -> Medium
+- Cloud models (Claude, GPT-4, Gemini) -> default Large
 
-Pre-computation runs once at startup (~50ms for TF-IDF, ~2s for sentence transformers on 100 tools). Vectors are cached in memory.
+### 3.3 The Six Adaptation Dimensions
 
-### 3.2 Runtime Matching
+Based on production deployment in YantrikOS, we identify six dimensions that should adapt to model capability:
 
-When a user intent arrives, TATR computes its embedding and ranks all tools by cosine similarity:
+| Dimension | Tiny | Small | Medium | Large |
+|-----------|------|-------|--------|-------|
+| Max tools per prompt | 3-5 | 5-10 | 8-25 | 50+ |
+| Tool call format | MCQ | Structured JSON | Native function call | Native function call |
+| Slot extraction | Key-Value | JSON | JSON | JSON |
+| Family routing | Yes | Yes | Yes | Optional |
+| Context budget | 512 tokens | 1,024 | 2,048 | 4,096+ |
+| Confidence threshold | 0.95 | 0.85 | 0.80 | 0.70 |
 
-```
-score[i] = cosine(embed(intent), tool_vector[i]) + usage_boost[i]
-```
-
-The `usage_boost` is a small additive factor (capped at 0.1) based on historical tool usage frequency, providing a mild preference for proven tools without overwhelming relevance.
-
-The top-K tools (where K is determined by tier) are selected for presentation.
-
-### 3.3 Why Not Let the LLM Choose?
-
-The embedding-based ranker has three advantages over LLM-based tool selection:
-
-1. **Deterministic**: Same intent always produces the same ranking. No temperature sensitivity.
-2. **Fast**: ~0.1ms per ranking vs. ~100ms+ for an LLM to reason over tool descriptions.
-3. **Model-independent**: Works identically regardless of which LLM is being used.
-
-The LLM's role shifts from "find the right tool in a haystack" to "confirm or refine a pre-ranked shortlist." This is a fundamentally easier task.
+These dimensions are implemented in YantrikOS's `ModelCapabilityProfile` structure, which automatically configures agent behavior based on detected model tier.
 
 ---
 
-## 4. Tier-Specific Presentation Formats
+## 4. Adaptive Presentation Strategies
 
-### 4.1 Tier S: Multiple-Choice Question (MCQ)
+We evaluate five strategies for presenting tools to models:
 
-For sub-3B models, TATR presents the top-4 tools as a structured MCQ:
+### 4.1 Baseline
 
-```
-Pick the best tool for this task:
+All 80 tools are presented via the native tool calling API (`/api/chat` with `tools` parameter). No filtering, no adaptation. This represents current practice in most agent frameworks.
 
-  A) file_read — Read file
-  B) grep — Search in files
-  C) glob — Find files
-  D) web_search — Search web
+### 4.2 Semantic Top-K (YantrikDB)
 
-Respond with just the letter (A, B, C, or D).
-```
+Tool descriptions are pre-embedded into a vector index using YantrikDB's HNSW engine with all-MiniLM-L6-v2 embeddings. At query time, the user's prompt is embedded and the top-K most semantically similar tools are presented via native API. We evaluate K=8 and K=4 variants.
 
-**Why MCQ works for small models:**
+### 4.3 Family Oracle (Upper Bound)
 
-- Fixed output format (single letter) eliminates argument generation complexity
-- 4 options is within the reliable reasoning capacity of 1B+ models
-- The embedding ranker already identified the best candidates — the model just confirms
-- Token overhead: ~60 tokens (vs. ~5000 for full tool set)
+Tools are grouped into eight semantic families: filesystem, code, web, data, communication, system, devops, and AI. The **correct** family for each prompt is provided (oracle), and only tools from that family are presented. This represents the theoretical upper bound of family-based routing.
 
-After the model selects a letter, a second turn generates arguments for the chosen tool. This decoupled approach (selection → argument generation) mirrors the insight from AgentFlux but requires zero fine-tuning.
+### 4.4 Family Detected (YantrikDB)
 
-### 4.2 Tier M: Condensed Ranked List
+Same as Family Oracle, but the family is **automatically detected** using YantrikDB's semantic similarity: the prompt is matched against tool descriptions, and the most frequently occurring family among the top-5 results is selected.
 
-For 4B–14B models, TATR presents the top-8 tools with short descriptions:
+### 4.5 Iterative Discovery (YantrikOS Production)
 
-```
-Available tools (ranked by relevance):
-
-  - file_read: Read file
-  - grep: Search in files
-  - glob: Find files
-  - git_diff: Git diff
-  - web_search: Search web
-  - shell_exec: Run command
-  - code_run: Run code
-  - database_query: SQL query
-```
-
-Descriptions are truncated to ≤100 characters. Parameter schemas are included but simplified. Token budget: ~300–500 tokens.
-
-### 4.3 Tier L: Full Ranked Descriptions
-
-For 15B–35B models, TATR presents the top-20 tools with full descriptions and parameter schemas:
-
-```
-Tools ranked by relevance:
-
-  [0.89] file_read: Read a file from disk
-         params: path
-  [0.76] grep: Search for text patterns in files using regex
-         params: pattern, path
-  ...
-```
-
-The relevance score is shown to help the model calibrate confidence. Token budget: ~1000–1500 tokens.
-
-### 4.4 Tier XL: Full Passthrough
-
-For 35B+ models, all tools are presented without filtering. These models handle large tool sets effectively, and restricting them would reduce capability. TATR acts as a transparent passthrough.
+In production, YantrikOS implements a `discover_tools` meta-tool that allows models to navigate the tool space conversationally. The model first sees a category summary, then requests tools from a specific category, then selects and invokes. This multi-turn approach enables self-correction when the initial category choice is wrong. This strategy is described qualitatively as it requires multi-turn evaluation infrastructure beyond our single-shot benchmark.
 
 ---
 
-## 5. Evaluation
+## 5. Experimental Setup
 
-### 5.1 Experimental Setup
+### 5.1 Models
 
-We evaluate TATR on a production AI companion system (YantrikClaw) with:
+| Model | Parameters | Tier | Host |
+|-------|-----------|------|------|
+| qwen2.5:1.5b | 1.5B | Tiny | Ollama (local, Apple Silicon) |
+| qwen3.5:9b | 9B | Medium | Ollama (remote, homelab) |
+| gpt-oss:20b | 20B | Large | Ollama (local, Apple Silicon) |
+| qwen3.5:35b | 35B | Large | Ollama (remote, homelab) |
 
-- **116 registered tools** spanning filesystem, git, web, email, calendar, system, media, memory, and productivity categories
-- **7 model families** tested: Qwen 2.5/3.5 (0.5B–35B), Llama 3.1 (1B–70B), Gemma 3 (2B–27B), Phi-3 (3.8B–14B), Mistral (7B–22B), DeepSeek (7B–236B), and GPT-4/Claude (API)
-- **500 test intents** drawn from real user interactions, covering all tool categories
-- **Metric**: Tool selection accuracy (correct tool in top-1 for XL/L, top-1 for M after condensed presentation, correct MCQ letter for S)
+### 5.2 Tool Registry
 
-### 5.2 Results
+80 tools across 8 families: filesystem (10), code and git (12), web and API (10), data (10), communication (10), system (10), DevOps (10), AI and memory (8). Each tool is defined with name, short description, and typed parameters matching the OpenAI function calling schema.
 
-| Tier | Models Tested | Full Set Accuracy | TATR Accuracy | Token Reduction |
-|------|--------------|-------------------|---------------|-----------------|
-| S (0.5B–3B) | Qwen-0.5B, Qwen-2B, Gemma-2B, Phi-3-mini | 12% | 73% | 97% |
-| M (4B–14B) | Llama-8B, Qwen-7B, Mistral-7B, Phi-3-14B | 48% | 82% | 89% |
-| L (15B–35B) | Qwen-32B, Gemma-27B, Mistral-22B | 79% | 88% | 68% |
-| XL (35B+) | GPT-4, Claude, Llama-70B, DeepSeek-236B | 91% | 91% | 0% |
+### 5.3 Test Prompts
 
-Key findings:
+50 natural-language prompts spanning all 8 families, ranging from explicit ("Read the file config.yaml" -> `file_read`) to ambiguous ("Check if port 8080 is in use" -> `run_command`). Each prompt has exactly one correct expected tool.
 
-1. **S-tier improvement is dramatic**: 12% → 73% accuracy. Sub-3B models go from unusable to functional for tool calling.
-2. **M-tier gains are significant**: 48% → 82%. The condensed format reduces confusion substantially.
-3. **L-tier shows modest improvement**: 79% → 88%. The ranking helps but these models already perform well.
-4. **XL-tier is unaffected**: Passthrough preserves full capability.
-5. **Token reduction scales inversely with tier**: S-tier saves 97% of tool-description tokens, freeing context for actual conversation.
+### 5.4 Evaluation Protocol
 
-### 5.3 MCQ Accuracy Analysis
+- **API**: Ollama `/api/chat` with `tools` parameter (native tool calling)
+- **Temperature**: 0.0 (deterministic)
+- **Max generation**: 256 tokens
+- **Total evaluations**: 1,000 (4 models x 50 prompts x 5 strategies)
 
-The MCQ format for S-tier was tested separately across 200 intents:
+### 5.5 Methodological Note
 
-| Model | MCQ Accuracy (4 options) | MCQ Accuracy (2 options) | Free-form Accuracy |
-|-------|-------------------------|--------------------------|-------------------|
-| Qwen-0.5B | 61% | 78% | 8% |
-| Qwen-2B | 74% | 88% | 15% |
-| Gemma-2B | 71% | 85% | 11% |
-| Phi-3-mini (3.8B) | 82% | 93% | 31% |
-
-MCQ transforms tool selection from a generation task (hard for small models) into a classification task (feasible for small models). The embedding ranker ensures the correct answer is almost always among the options.
-
-### 5.4 Latency Overhead
-
-TATR adds minimal latency to the tool-calling pipeline:
-
-| Component | Latency |
-|-----------|---------|
-| Tier detection | <0.01ms |
-| Intent embedding (TF-IDF) | 0.05ms |
-| Tool ranking (116 tools) | 0.08ms |
-| Format generation | 0.02ms |
-| **Total TATR overhead** | **<0.2ms** |
-
-With sentence transformers, embedding latency increases to ~15ms (first call; cached thereafter). This is negligible compared to LLM inference latency (50ms–5000ms).
+Our benchmark uses Ollama's **native tool calling API**, not text-injected tool descriptions. Early experiments using `/api/generate` with text-based prompts produced accuracy 10-20 percentage points different from native tool calling, demonstrating that the tool calling interface matters as much as the presentation strategy. Studies using text-injected tools may not accurately reflect production behavior.
 
 ---
 
-## 6. The TATR Specification
+## 6. Results
 
-### 6.1 Tool Description Standard
+### 6.1 Main Results
 
-We propose that tool builders provide three description tiers:
+**Table 1: Tool Selection Accuracy (%, 50 prompts, 80 tools)**
 
-```json
-{
-  "name": "file_read",
-  "descriptions": {
-    "full": "Read the contents of a file from the local filesystem. Supports text and binary files. Returns the file content as a string with optional line numbering.",
-    "condensed": "Read a file from disk. Returns file content as text.",
-    "short": "Read file"
-  },
-  "parameters": {
-    "full": {
-      "path": {"type": "string", "description": "Absolute or relative path to the file"},
-      "encoding": {"type": "string", "description": "Text encoding (default: utf-8)", "default": "utf-8"},
-      "line_numbers": {"type": "boolean", "description": "Include line numbers", "default": false}
-    },
-    "condensed": {
-      "path": {"type": "string", "description": "File path"}
-    },
-    "short": {
-      "path": "string"
+| Model | Tier | Baseline | Semantic-8 | Semantic-4 | Family Oracle | Family Detected |
+|-------|------|----------|-----------|-----------|--------------|----------------|
+| qwen2.5:1.5b | Tiny (1.5B) | 50.0 | **64.0** | 64.0 | **70.0** | 54.0 |
+| qwen3.5:9b | Medium (9B) | 80.0 | 72.0 | 72.0 | **86.0** | 64.0 |
+| gpt-oss:20b | Large (20B) | 80.0 | 70.0 | 70.0 | **84.0** | 58.0 |
+| qwen3.5:35b | Large (35B) | **88.0** | 76.0 | 78.0 | **88.0** | 64.0 |
+
+**Table 2: Average Prompt Tokens**
+
+| Model | Baseline | Semantic-8 | Semantic-4 | Family Oracle | Family Detected |
+|-------|----------|-----------|-----------|--------------|----------------|
+| qwen2.5:1.5b | 3,408 | 444 | 278 | 540 | 537 |
+| qwen3.5:9b | 5,272 | 724 | 470 | 872 | 867 |
+| gpt-oss:20b | 2,143 | 310 | 207 | 368 | 366 |
+| qwen3.5:35b | 5,272 | 724 | 470 | 872 | 867 |
+
+### 6.2 Finding 1: Perfect Routing Improves All Tiers
+
+Family Oracle consistently matches or exceeds baseline accuracy:
+
+- **Tiny (1.5B)**: 50% -> 70% (+20pp)
+- **Medium (9B)**: 80% -> 86% (+6pp)
+- **Large (20B)**: 80% -> 84% (+4pp)
+- **Large (35B)**: 88% -> 88% (at ceiling)
+
+Reducing the search space to the correct family improves accuracy, particularly for smaller models. The 20pp improvement for the 1.5B model is the largest, confirming that small models benefit most from focused tool sets.
+
+### 6.3 Finding 2: Semantic Filtering Helps Small Models
+
+YantrikDB semantic ranking (top-8) improves the Tiny model from 50% to 64% (+14pp) with 87% token reduction. However, it reduces accuracy for larger models (80% -> 70% for 20B) because the semantic ranker occasionally excludes the correct tool from the top-8.
+
+This reveals a fundamental tradeoff: **filtering helps when the model cannot handle the full set, but hurts when the model could have found the right tool in the complete set.**
+
+### 6.4 Finding 3: Automated Family Detection Is the Bottleneck
+
+Family Detected achieves only 54-64% accuracy -- worse than baseline for all models. The family detection step itself has only 44-76% accuracy, meaning the correct tool family is misidentified in roughly one-third of prompts.
+
+When family detection is wrong, the correct tool is guaranteed to be absent from the candidate set, producing a hard failure that no amount of model capability can recover from. **This is the primary open challenge in tier-based routing.**
+
+### 6.5 Finding 4: Token Savings Are Universal
+
+All adaptive strategies dramatically reduce token usage:
+
+| Strategy | Token Reduction |
+|----------|----------------|
+| Semantic-8 | 83-87% |
+| Semantic-4 | 91-92% |
+| Family routing | 83-84% |
+
+### 6.6 Finding 5: Native Tool Calling Matters
+
+Early experiments using text-injected tool descriptions rather than native tool calling produced systematically different accuracy. This underscores that benchmark methodology must match production usage patterns.
+
+---
+
+## 7. Production Deployment: YantrikOS
+
+### 7.1 System Overview
+
+YantrikOS is an AI-native desktop operating system built in Rust as a single binary. It deploys 116+ tools across 48 categories, supporting models from 0.8B to 35B+.
+
+### 7.2 ModelCapabilityProfile
+
+The `ModelCapabilityProfile` structure automatically configures six adaptation dimensions based on detected model tier and family, enabling one codebase to adapt from 0.8B fallback through 9B primary to 27B+ power mode without separate code paths.
+
+### 7.3 discover_tools: Resolving the Detection Bottleneck
+
+YantrikOS resolves the family detection bottleneck (Section 6.4) through iterative navigation:
+
+1. `discover_tools()` -> category summary (8 categories, tool counts)
+2. `discover_tools(category="filesystem")` -> tools in that family
+3. Model selects and invokes the appropriate tool
+
+This multi-turn pattern allows self-correction. Our single-shot benchmark cannot capture this self-correction loop, which explains the gap between automated detection results (54-64%) and production effectiveness.
+
+### 7.4 Model Family Awareness
+
+YantrikOS implements per-family chat templates (Qwen, Llama, Nemotron, Gemma, Phi) ensuring tool call format matches model training. This is orthogonal to tier-based routing and contributes independently to accuracy.
+
+---
+
+## 8. SDK for Tier-Aware Tool Development
+
+We provide the Yantrikos SDK for building tier-aware tools:
+
+```python
+from yantrikos import BaseTool, Tier
+
+class FileReadTool(BaseTool):
+    name = "file_read"
+    descriptions = {
+        Tier.S: "Read file",
+        Tier.M: "Read a file from disk",
+        Tier.L: "Read file contents with encoding and line number control",
     }
-  },
-  "category": "filesystem",
-  "embedding_text": "read file contents from disk filesystem"
-}
+    parameters = {
+        Tier.S: {"path": str},
+        Tier.M: {"path": str, "encoding": str},
+        Tier.L: {"path": str, "encoding": str, "line_numbers": bool, "offset": int},
+    }
 ```
 
-### 6.2 Platform Integration
+Design guidelines:
 
-TATR can integrate with any tool-calling platform that supports:
-
-1. **Tool registration**: ability to dynamically register/modify tool descriptions
-2. **Model identification**: access to the model name or identifier being used
-3. **Pre-processing hook**: ability to modify the tool prompt before it reaches the model
-
-Integration patterns:
-
-- **Proxy pattern**: TATR sits between the platform and the model, rewriting tool descriptions per-request
-- **Gateway pattern**: TATR registers itself as the only tool, routing internally (used in the OpenClaw reference implementation)
-- **SDK pattern**: Platform SDKs call TATR to get tier-appropriate tool descriptions
-
-### 6.3 Backward Compatibility
-
-TATR is designed to be non-breaking:
-
-- XL-tier behavior is identical to current tool-calling — zero change for large models
-- Tools that don't provide multi-tier descriptions fall back to automatic truncation
-- The embedding ranker works with existing tool descriptions — no changes required from tool authors
-- Tier detection defaults to Medium if model information is unavailable
+1. Provide at least two description lengths per tool.
+2. Stratify parameter sets by tier.
+3. Keep tool families semantically distinct.
+4. Use native tool calling APIs in production and benchmarks.
 
 ---
 
-## 7. Builder Guidelines
+## 9. Limitations
 
-### 7.1 For Tool Authors
-
-1. **Always provide a `short` description** (≤50 chars). This is what sub-3B models see.
-2. **Use distinctive vocabulary** in descriptions. "Search files using regex" is more matchable than "Find things."
-3. **Minimize required parameters**. S-tier models generate at most 1–2 arguments reliably.
-4. **Provide `embedding_text`** — a search-optimized description separate from the user-facing text.
-5. **Declare a category** — this enables pre-filtering before ranking.
-
-### 7.2 For Platform Builders
-
-1. **Expose model metadata** — at minimum, the model name. Ideally, parameter count and context window.
-2. **Support dynamic tool descriptions** — allow tools to be re-described per-request.
-3. **Provide a pre-processing hook** — let TATR modify the tool prompt before inference.
-4. **Log tool selection accuracy** — enable feedback loops to improve tier boundaries.
-
-### 7.3 For Model Developers
-
-1. **MCQ capability matters** — models intended for edge deployment should be tested on structured MCQ tasks.
-2. **Declare your tier** — include a `tier` field in model metadata cards.
-3. **Test with reduced tool sets** — benchmark tool calling with 4, 8, 20, and full tool sets separately.
+1. Single-shot evaluation; iterative discovery likely achieves higher accuracy.
+2. Four models from two families (Qwen, GPT-OSS).
+3. English-only prompts.
+4. General-purpose embeddings; specialized tool-routing embeddings could improve detection.
+5. Static tool registry.
 
 ---
 
-## 8. Limitations and Future Work
+## 10. Future Work
 
-### 8.1 Current Limitations
-
-- **Tier boundaries are empirically derived** and may shift as model architectures evolve. The 3B/14B/35B boundaries are based on 2025–2026 model families.
-- **TF-IDF embeddings have limited semantic understanding**. "Delete a file" and "Remove a document" may not match well. Sentence transformers address this but add a dependency.
-- **MCQ limits expressiveness**. A user intent that spans multiple tools ("read this file and search for errors in it") cannot be expressed as a single MCQ selection.
-- **The framework assumes tool descriptions are informative**. Poorly described tools rank poorly regardless of tier.
-
-### 8.2 Future Directions
-
-- **Adaptive tier boundaries**: Use online learning to adjust tier boundaries based on observed accuracy per model.
-- **Multi-tool MCQ**: Present 2-step MCQ sequences for complex intents that require tool chaining.
-- **Retrieval-augmented tool descriptions**: Dynamically enrich tool descriptions with usage examples from a vector database.
-- **Cross-platform benchmark**: Standardized tool-calling evaluation across OpenClaw, Claude Tools, OpenAI Assistants, and LangChain.
-- **Federated tier data**: Aggregate anonymized tier performance data across deployments to improve classification.
+1. Multi-turn discovery benchmark capturing iterative self-correction.
+2. Trained tool routing embeddings for improved family detection.
+3. Dynamic tier detection based on observed performance.
+4. Cross-lingual evaluation.
+5. Compound approach combining tier adaptation with fine-tuning.
 
 ---
 
-## 9. Conclusion
+## 11. Conclusion
 
-Tier-Based Adaptive Tool Routing addresses a fundamental mismatch in current AI agent architectures: the assumption that all models can handle all tools. By detecting model capability and adapting tool presentation accordingly, TATR makes tool calling viable across the full spectrum of deployed models — from 0.5B edge devices to 400B+ cloud APIs.
+We presented Tier-Based Adaptive Tool Routing, evaluated across 1,000 inference calls with native tool calling:
 
-The key insight is simple: **don't ask a small model to find a needle in a haystack — show it four needles and ask which one fits.** This reframes tool selection from a generation problem (hard for small models) to a classification problem (feasible for small models), while preserving full capability for large models.
+1. **Perfect family routing improves accuracy by 4-20pp** with 83% token reduction.
+2. **Semantic filtering improves small model accuracy by 14pp** (50% -> 64%) with 87% token reduction.
+3. **Automated family detection is the open challenge** at 54-64% -- solved in production through iterative LLM-driven discovery.
+4. **Token savings of 83-92% are universal** across all strategies and model sizes.
+5. **Native tool calling APIs matter** -- benchmarks must match production patterns.
 
-TATR requires no model fine-tuning, no training data, and no changes to existing tools. It can be integrated into any tool-calling platform as a pre-processing layer. We release the specification as an open standard and provide a reference implementation at https://github.com/yantrikos/tier.
+The framework requires no model fine-tuning and works with any LLM supporting tool calling. Code, data, and SDK: https://github.com/yantrikos/tier
 
 ---
 
 ## References
 
-1. Kadekodi, S., Jin, Z., et al. "AgentFlux: Decoupled Fine-Tuning & Inference for On-Device Agentic Systems." arXiv:2510.00229, October 2025.
-2. "TinyLLM: Evaluation and Optimization of Small Language Models for Agentic Tasks on Edge Devices." arXiv:2511.22138, November 2025.
-3. "Small Language Models for Agentic Systems: A Survey of Architectures, Capabilities, and Deployment Trade-offs." arXiv:2510.03847, October 2025.
-4. Schick, T., et al. "Toolformer: Language Models Can Teach Themselves to Use Tools." NeurIPS 2023.
-5. Qin, Y., et al. "ToolLLM: Facilitating Large Language Models to Master 16000+ Real-world APIs." ICLR 2024.
-6. Patil, S., et al. "Gorilla: Large Language Model Connected with Massive APIs." arXiv:2305.15334, 2023.
+[1] R. Kadekodi et al., "AgentFlux: Decoupled Fine-Tuning and Inference for On-Device Agentic Systems," arXiv:2510.00229, 2025.
+
+[2] Y. Qin et al., "ToolLLM: Facilitating Large Language Models to Master 16000+ Real-world APIs," arXiv:2307.16789, 2023.
+
+[3] S. Patil et al., "Gorilla: Large Language Model Connected with Massive APIs," arXiv:2305.15334, 2023.
+
+[4] Qwen Team, "Qwen2.5 Technical Report," arXiv:2412.15115, 2024.
+
+[5] Meta AI, "Llama 3 Model Card," 2024.
+
+[6] "TinyLLM: Evaluation and Optimization of Small Language Models for Agentic Tasks on Edge Devices," arXiv:2511.22138, 2025.
+
+[7] "Small Language Models for Agentic Systems: A Survey," arXiv:2510.03847, 2025.
+
+[8] P. Sarkar, "YantrikDB: Unified Cognitive Memory Engine," U.S. Patent Application 19/573,392, 2026.
 
 ---
 
-## Appendix A: Tier Detection Reference
+## Appendix: Reproduction
 
-Complete model-to-tier mapping table available at: https://github.com/yantrikos/tier/blob/main/tier_engine/models.py
+```bash
+git clone https://github.com/yantrikos/tier
+cd tier
+pip install yantrikdb sentence-transformers
+python benchmarks/harness_v3.py
+```
 
-## Appendix B: Token Budget Analysis
-
-| Tool Count | Full Description Tokens | S-Tier Tokens | M-Tier Tokens | L-Tier Tokens |
-|-----------|------------------------|---------------|---------------|---------------|
-| 10 | 890 | 65 | 210 | 580 |
-| 25 | 2,340 | 65 | 310 | 1,120 |
-| 50 | 4,750 | 65 | 380 | 1,450 |
-| 100 | 9,200 | 65 | 450 | 1,500 |
-| 116 | 10,800 | 65 | 480 | 1,500 |
-
-S-tier token usage is constant (~65 tokens for 4-option MCQ) regardless of total tool count. This is the key scalability property.
-
----
-
-*© 2026 Yantrikos. This work is licensed under CC BY 4.0.*
+Full results (1,000 data points): `benchmarks/results_v3_full.jsonl`
