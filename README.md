@@ -244,9 +244,9 @@ class MyTool(BaseTool):
 
 ### YantrikOS
 
-Tier-based routing is production-validated in [YantrikOS](https://github.com/yantrikos/yantrik-os), an AI-native desktop OS with **116+ tools** across 48 categories, running models from 0.8B to 35B+. The `ModelCapabilityProfile` adapts six dimensions: tool count, call format, slot extraction, family routing, context budget, and confidence thresholds.
+The tier architecture originates from [YantrikOS](https://github.com/yantrikos/yantrik-os), an AI-native desktop OS (under active development) with **116+ tools** across 48 categories, designed for models from 0.8B to 35B+. The `ModelCapabilityProfile` adapts six dimensions: tool count, call format, slot extraction, family routing, context budget, and confidence thresholds.
 
-YantrikOS resolves the family detection bottleneck through `discover_tools` — a meta-tool that lets models navigate the tool space iteratively with self-correction.
+YantrikOS addresses the family detection bottleneck through `discover_tools` — a meta-tool that lets models navigate the tool space iteratively with self-correction.
 
 ### OpenClaw Plugin
 
