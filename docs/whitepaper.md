@@ -332,7 +332,7 @@ The framework requires no model fine-tuning and works with any LLM supporting to
 
 [7] "Small Language Models for Agentic Systems: A Survey," arXiv:2510.03847, 2025.
 
-[8] P. Sarkar, "YantrikDB: A Cognitive Memory Engine for Persistent AI Systems," Zenodo, DOI: 10.5281/zenodo.18793952, 2026.
+[8] P. Sarkar, "YantrikDB: A Cognitive Memory Engine for Persistent AI Systems," Zenodo, DOI: 10.5281/zenodo.18793952, 2026. U.S. Patent Application 19/573,392.
 
 ---
 
