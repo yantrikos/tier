@@ -1,0 +1,475 @@
+\documentclass[11pt,twocolumn]{article}
+
+\usepackage[margin=0.75in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{microtype}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+
+\titleformat{\section}{\large\bfseries}{\thesection.}{0.5em}{}
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{0.5em}{}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot[C]{\thepage}
+\renewcommand{\headrulewidth}{0pt}
+
+\title{\textbf{Tier-Based Adaptive Tool Routing for\\Capability-Heterogeneous AI Agents}}
+\author{%
+  \textbf{Pranab Sarkar}\\
+  Yantrikos\\
+  \texttt{developer@pranab.co.in}\\
+  \url{https://github.com/spranab}\\[0.5em]
+  \small ORCID: 0009-0009-8683-1481\\[1em]
+  \small\textbf{Project:} \url{https://github.com/yantrikos/tier}
+}
+\date{Version 1.0.0 --- March 2026}
+
+\begin{document}
+\twocolumn[
+  \maketitle
+  \begin{center}
+    \rule{0.5\textwidth}{0.4pt}
+  \end{center}
+  \vspace{0.5em}
+  \begin{abstract}
+  \noindent Tool-using AI agents are deployed across models ranging from 1.5B to 35B+ parameters, yet frameworks present identical tool interfaces regardless of model capability. We evaluate seven adaptive presentation strategies across four models (1.5B--35B) with 80 tools using native tool calling APIs. A novel decomposition reveals that tool selection accuracy factors into \emph{family routing accuracy} and \emph{within-family selection accuracy}, where the latter is consistently high (89--98\%) across all model sizes. This means the tool selection problem is primarily a \textbf{family routing problem}. Our best strategies improve accuracy by +8--10pp while reducing prompt tokens by 83--92\%: hybrid presentation (8~detailed + 72~name-only tools) achieves 60\% for 1.5B models (+10pp), while semantic reordering with category hints achieves 88\% for 20B models (+8pp), matching 35B baseline performance. We validate these findings against a production system (YantrikOS) with 116+ tools, and release an open-source benchmark, SDK, and OpenClaw plugin. Benchmark data: 1,000+ inference calls across three experimental rounds.
+
+  \medskip
+  \noindent\textbf{Keywords:} tool use, function calling, small language models, adaptive routing, AI agents, model capability, YantrikDB
+  \end{abstract}
+  \vspace{1em}
+]
+
+% ======================================================================
+\section{Introduction}
+
+\subsection{The Problem}
+
+Tool-using AI agents invoke external functions --- reading files, querying databases, sending messages, executing code. Frameworks such as OpenAI function calling, Anthropic tool use, and open-source platforms like OpenClaw present tools through structured schemas that models select from.
+
+A critical assumption pervades these frameworks: \textbf{all models receive the same tool presentation}. Whether the model has 1.5B or 35B parameters, it receives identical descriptions, parameter schemas, and selection interfaces. With 80 tools, this produces 2,100--5,300 prompt tokens of tool metadata --- consuming 30--50\% of a small model's context window.
+
+The consequences are measurable: a 1.5B model achieves only 50\% tool selection accuracy with 80 native tools, while a 35B model achieves 88\%. The gap is not in the model's ability to \emph{use} tools, but in its ability to \emph{navigate} a large tool space.
+
+\subsection{Key Insight: The Decomposition}
+
+We decompose tool selection into two stages:
+
+\begin{equation}
+P(\text{correct tool}) = P(\text{correct family}) \times P(\text{correct tool} \mid \text{correct family})
+\label{eq:decomposition}
+\end{equation}
+
+Our experiments reveal that even a 1.5B model achieves \textbf{89\% within-family accuracy} --- comparable to the 98\% achieved by a 35B model. The bottleneck is family routing, not tool selection. This insight reframes the problem: instead of making small models handle more tools, we should help them find the right tool \emph{neighborhood}.
+
+\subsection{Contributions}
+
+\begin{enumerate}[leftmargin=*,nosep]
+  \item A \textbf{decomposition of tool routing} into family selection and within-family disambiguation, showing the bottleneck is routing (56\% for 1.5B) not selection (89\% given correct family).
+  \item An \textbf{empirical evaluation of seven strategies} across four model sizes using native tool calling APIs, with 1,000+ total inference calls.
+  \item \textbf{Two practical strategies} that improve accuracy without additional LLM calls: hybrid presentation (+10pp for 1.5B) and semantic reordering with hints (+8pp for 20B).
+  \item A \textbf{production-validated framework} in YantrikOS with 116+ tools, and an open-source SDK for tier-aware tool development.
+\end{enumerate}
+
+% ======================================================================
+\section{Related Work}
+
+\textbf{Tool use in LLMs.} Function calling is now standard across OpenAI~\cite{openai_fc}, Anthropic, and open-source models (Qwen~\cite{qwen25}, Llama~\cite{llama3}). These systems present all available tools regardless of model capability.
+
+\textbf{Small models for agents.} AgentFlux~\cite{agentflux} decouples tool selection from argument generation, improving 7B accuracy by 46\% but still presenting all tools. TinyLLM~\cite{tinyllm} evaluates sub-3B models on function calling, finding significant degradation with large tool sets. The SLM Survey~\cite{slm_survey} notes models under 20B are ``sufficient for schema-constrained accuracy'' but struggle with large registries.
+
+\textbf{Gap.} No existing work addresses \emph{adaptive tool presentation} based on model capability. Prior approaches fine-tune models for better tool calling (Gorilla~\cite{gorilla}, ToolLLM~\cite{toollm}). We adapt the presentation instead --- zero training cost, works with any model.
+
+% ======================================================================
+\section{Method}
+
+\subsection{Model Capability Tiers}
+
+We classify models by parameter count into four tiers (Table~\ref{tab:tiers}). Tier detection parses parameter count from model name strings (e.g., \texttt{qwen3.5:9b} $\rightarrow$ 9B $\rightarrow$ Medium).
+
+\begin{table}[h]
+\centering
+\caption{Model capability tiers.}
+\label{tab:tiers}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Tier & Parameters & Key constraint \\
+\midrule
+Tiny & $<$ 1.5B & Struggles with $>$10 tools \\
+Small & 1.5--4B & Limited structured JSON \\
+Medium & 4--14B & Reliable with 8--25 tools \\
+Large & 14B+ & Handles full tool sets \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Tool Families}
+
+80 tools are organized into 8 semantic families: filesystem~(10), code and git~(12), web and API~(10), data~(10), communication~(10), system~(10), DevOps~(10), AI and memory~(8).
+
+\subsection{Presentation Strategies}
+
+We evaluate seven strategies, organized by mechanism:
+
+\textbf{Filtering strategies} (reduce tool count):
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Baseline.} All 80 tools via native API.
+  \item \textbf{Semantic top-8.} YantrikDB~\cite{yantrikdb} vector similarity ranks tools; top-8 presented.
+  \item \textbf{Semantic top-4.} Same as above, $K{=}4$.
+\end{itemize}
+
+\textbf{Routing strategies} (select subset by category):
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Family oracle.} Correct family provided (upper bound).
+  \item \textbf{Family detected.} Auto-detected via YantrikDB similarity.
+\end{itemize}
+
+\textbf{Presentation strategies} (change appearance, not set):
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Semantic reorder.} All 80 tools, sorted by similarity.
+  \item \textbf{Reorder + category hint.} Reorder + system prompt hint.
+  \item \textbf{Hybrid (8+72).} Top-8 get full descriptions; 72 appear as name-only entries.
+\end{itemize}
+
+\subsection{Semantic Ranking via YantrikDB}
+
+Tool descriptions are pre-embedded into YantrikDB's HNSW vector index using all-MiniLM-L6-v2 embeddings. At query time, the user prompt is embedded and tools are ranked by cosine similarity. This ranking drives the semantic strategies.
+
+% ======================================================================
+\section{Experimental Setup}
+
+\subsection{Models}
+
+\begin{table}[h]
+\centering
+\caption{Evaluated models.}
+\label{tab:models}
+\small
+\begin{tabular}{@{}llll@{}}
+\toprule
+Model & Params & Tier & Host \\
+\midrule
+qwen2.5:1.5b & 1.5B & Tiny & local \\
+qwen3.5:9b & 9B & Medium & remote \\
+gpt-oss:20b & 20B & Large & local \\
+qwen3.5:35b & 35B & Large & remote \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Evaluation Protocol}
+
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{API}: Ollama \texttt{/api/chat} with \texttt{tools} parameter (native tool calling)
+  \item \textbf{Temperature}: 0.0 (deterministic)
+  \item \textbf{Prompts}: 50 natural-language requests spanning all 8 families
+  \item \textbf{Metrics}: tool selection accuracy (exact match), family accuracy, prompt tokens, latency
+  \item \textbf{Total}: 1,000+ inference calls across three rounds
+\end{itemize}
+
+\subsection{Methodological Note}
+
+We use Ollama's \textbf{native tool calling API}, not text-injected descriptions. Early experiments using text injection (\texttt{/api/generate}) produced 10--20pp different results, confirming that benchmark methodology must match production usage. Models are trained for structured tool calling; text injection does not reflect deployment behavior.
+
+% ======================================================================
+\section{Results}
+
+\subsection{Main Results}
+
+Table~\ref{tab:accuracy_filter} shows filtering and routing strategy accuracy. Table~\ref{tab:accuracy_present} shows presentation strategy results.
+
+\begin{table}[h]
+\centering
+\caption{Filtering \& routing strategies --- accuracy (\%).}
+\label{tab:accuracy_filter}
+\small
+\begin{tabular}{@{}llrrrrr@{}}
+\toprule
+Model & Tier & Base & S-8 & S-4 & Oracle & Det. \\
+\midrule
+1.5B & Tiny & 50 & \textbf{64} & 64 & \textbf{70} & 54 \\
+9B & Med & 80 & 72 & 72 & \textbf{86} & 64 \\
+20B & Lrg & 80 & 70 & 70 & \textbf{84} & 58 \\
+35B & Lrg & \textbf{88} & 76 & 78 & \textbf{88} & 64 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Presentation strategies --- accuracy (\%, 1.5B \& 20B).}
+\label{tab:accuracy_present}
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Model & Base & Reorder & +Hint & Hybrid \\
+\midrule
+1.5B & 50 & 54 & 54 & \textbf{60} \\
+20B & 80 & 84 & \textbf{88} & 76 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[h]
+\centering
+\caption{Average prompt tokens by strategy.}
+\label{tab:tokens}
+\small
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Model & Base & S-8 & Oracle & Hybrid \\
+\midrule
+1.5B & 3,408 & 444 & 540 & $\sim$1,800 \\
+9B & 5,272 & 724 & 872 & --- \\
+20B & 2,143 & 310 & 368 & $\sim$1,200 \\
+35B & 5,272 & 724 & 872 & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{The Decomposition: Family Routing Is the Bottleneck}
+
+Table~\ref{tab:decomposition} presents the accuracy decomposition from Equation~\ref{eq:decomposition}.
+
+\begin{table}[h]
+\centering
+\caption{Accuracy decomposition: $P(\text{tool}) = P(\text{fam}) \times P(\text{tool}|\text{fam})$.}
+\label{tab:decomposition}
+\small
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+Model & Strategy & $P$(fam) & $P$(tool) & $P$(t$|$f) \\
+\midrule
+1.5B & Baseline & 56\% & 50\% & \textbf{89\%} \\
+1.5B & Semantic-8 & 70\% & 64\% & \textbf{91\%} \\
+1.5B & Oracle & 74\% & 70\% & \textbf{95\%} \\
+\midrule
+9B & Baseline & 82\% & 80\% & \textbf{98\%} \\
+9B & Oracle & 88\% & 86\% & \textbf{98\%} \\
+\midrule
+20B & Baseline & 84\% & 80\% & \textbf{95\%} \\
+\midrule
+35B & Baseline & 90\% & 88\% & \textbf{98\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Finding~1: Within-family accuracy is consistently high (89--98\%).} Even the 1.5B model selects the correct tool 89\% of the time when presented with the correct family. The gap between model sizes is primarily in family routing (56\% vs 90\%), not in tool selection given the right family.
+
+\textbf{Finding~2: Family routing is the dominant error source.} Error analysis for the 1.5B baseline shows: 22/25 errors are wrong-family, only 3/25 are right-family-wrong-tool, plus 20 prompts received no tool call. The selection mechanism works; the search space is the problem.
+
+\subsection{Strategy Effectiveness by Model Scale}
+
+\textbf{Finding~3: Different strategies win at different scales.}
+\begin{itemize}[nosep,leftmargin=*]
+  \item \textbf{Tiny (1.5B):} Hybrid wins (+10pp). Detailed descriptions for top-8 semantically relevant tools, name-only for the rest.
+  \item \textbf{Large (20B):} Reorder + hint wins (+8pp). Semantic ordering + system prompt achieves 88\% --- matching 35B baseline.
+  \item \textbf{No strategy universally dominates.} Hybrid hurts 20B ($-$4pp); reorder+hint doesn't help 1.5B (+4pp only).
+\end{itemize}
+
+\textbf{Finding~4: Semantic filtering helps small models but can hurt large ones.} Semantic top-8 improves 1.5B from 50\% to 64\% (+14pp) but drops 20B from 80\% to 70\% ($-$10pp). Aggressive filtering removes tools the larger model could have found. The hybrid approach solves this by keeping all tools accessible.
+
+\subsection{Token Efficiency}
+
+\textbf{Finding~5: Token savings of 83--92\% are achievable.} Filtering strategies reduce tokens by 83--92\%. Hybrid achieves $\sim$47\% reduction. Reorder-based strategies use baseline tokens but improve accuracy --- a pure win.
+
+\subsection{Automated Family Detection}
+
+\textbf{Finding~6: Automated detection underperforms baseline.} YantrikDB-based family detection achieves only 54--64\% accuracy --- worse than baseline everywhere. When detection is wrong, the correct tool is absent, causing hard failure. The oracle ceiling (+4--20pp) shows the potential; bridging this gap is the open challenge.
+
+% ======================================================================
+\section{Production: YantrikOS}
+
+\subsection{System Overview}
+
+YantrikOS is an AI-native desktop operating system (Rust, single binary) with 116+ tools across 48 categories, supporting models from 0.8B to 35B+. The \texttt{ModelCapabilityProfile} structure adapts six dimensions: max tools per prompt, tool call format (MCQ/JSON/native), slot extraction mode, family routing, context budget, and confidence thresholds.
+
+\subsection{Resolving the Detection Bottleneck}
+
+YantrikOS resolves family detection through \texttt{discover\_tools} --- a meta-tool enabling iterative navigation:
+\begin{enumerate}[nosep,leftmargin=*]
+  \item \texttt{discover\_tools()} $\rightarrow$ category summary
+  \item \texttt{discover\_tools(category="filesystem")} $\rightarrow$ family tools
+  \item Model selects and invokes
+\end{enumerate}
+
+This multi-turn pattern allows self-correction when the initial choice is wrong. Our single-shot benchmark cannot capture this, explaining the gap between automated detection (54--64\%) and production effectiveness.
+
+\subsection{Model Family Awareness}
+
+YantrikOS implements per-family chat templates (Qwen, Llama, Nemotron, Gemma, Phi) ensuring tool call format matches model training --- orthogonal to tier-based routing.
+
+% ======================================================================
+\section{SDK for Tier-Aware Tools}
+
+The Yantrikos SDK enforces tier-aware tool design:
+
+\begin{verbatim}
+from yantrikos import BaseTool, Tier
+
+class FileReadTool(BaseTool):
+    name = "file_read"
+    descriptions = {
+        Tier.S: "Read file",
+        Tier.L: "Read file with encoding
+                 and line number control",
+    }
+    parameters = {
+        Tier.S: {"path": str},
+        Tier.L: {"path": str,
+                 "encoding": str,
+                 "line_numbers": bool},
+    }
+\end{verbatim}
+
+\textbf{Guidelines:} (1)~Provide at least two description lengths. (2)~Stratify parameters by tier. (3)~Keep families semantically distinct. (4)~Use native tool calling APIs.
+
+% ======================================================================
+\section{Limitations}
+
+\begin{enumerate}[nosep,leftmargin=*]
+  \item \textbf{Single-shot evaluation.} Iterative discovery (multi-turn) likely achieves higher accuracy.
+  \item \textbf{Four models, two families.} Results may differ for Llama, Gemma, Phi.
+  \item \textbf{English only.} Cross-lingual evaluation needed.
+  \item \textbf{General-purpose embeddings.} Specialized tool-routing embeddings could improve detection.
+  \item \textbf{Fixed tool registry.} Dynamic environments may need different strategies.
+  \item \textbf{No confidence intervals.} With 50 prompts, reported accuracies have $\pm$7pp margin at 95\% CI.
+\end{enumerate}
+
+% ======================================================================
+\section{Threats to Validity}
+
+\textbf{Prompt sensitivity.} Tool selection may be sensitive to exact prompt wording. Our 50 prompts are hand-crafted and may not represent the full distribution of real user requests.
+
+\textbf{Model-provider dependence.} Results are specific to Ollama's native tool calling implementation. Other providers (vLLM, TGI, cloud APIs) may produce different tool calling behavior.
+
+\textbf{Semantic ranker quality.} YantrikDB with all-MiniLM-L6-v2 provides general-purpose embeddings. Tool-specific embedding models could change the results substantially.
+
+\textbf{Tool registry design.} Our 80-tool registry was designed to be realistic but is not drawn from a production deployment. Tool description quality and family boundary clarity directly affect results.
+
+% ======================================================================
+\section{Conclusion}
+
+We presented Tier-Based Adaptive Tool Routing, evaluated across 1,000+ inference calls with native tool calling. Our decomposition reveals that tool selection is primarily a family routing problem --- even 1.5B models achieve 89\% accuracy within the correct family. Key results:
+
+\begin{enumerate}[nosep,leftmargin=*]
+  \item \textbf{Hybrid presentation} (8~detailed + 72~name-only) improves 1.5B accuracy from 50\% to 60\%.
+  \item \textbf{Semantic reorder + hint} improves 20B from 80\% to 88\%, matching 35B performance.
+  \item \textbf{No single strategy dominates} --- optimal presentation is scale-dependent.
+  \item \textbf{Token savings of 83--92\%} are universal across filtering strategies.
+  \item \textbf{Automated family detection remains the open challenge} at 54--64\%, solvable through iterative LLM-driven discovery as demonstrated in YantrikOS.
+\end{enumerate}
+
+The framework requires no fine-tuning and works with any model supporting tool calling. Code, data, and SDK: \url{https://github.com/yantrikos/tier}
+
+% ======================================================================
+\section*{Acknowledgments}
+
+This work was conducted independently. All models were evaluated on consumer hardware (Apple Silicon MacBook Pro + homelab with Ollama). The author thanks the open-source communities behind Qwen, Ollama, and Hugging Face for making local LLM experimentation accessible.
+
+% ======================================================================
+\section*{Reproducibility Statement}
+
+\textbf{Artifacts.} We release: (i)~the benchmark harness (\texttt{harness\_v3.py}), (ii)~the full tool registry (80~tools), (iii)~all 50 test prompts, (iv)~raw results as JSONL (1,000+ data points), (v)~the Yantrikos SDK.
+
+\textbf{Environment.} Local: Apple Silicon, Ollama v0.6+. Remote: homelab server, Ollama v0.6+. Models served via \texttt{/api/chat} with native tool calling. Temperature: 0.0. Max generation: 256 tokens.
+
+\textbf{Procedure.} To replicate:
+\begin{verbatim}
+git clone https://github.com/yantrikos/tier
+cd tier
+pip install yantrikdb sentence-transformers
+python benchmarks/harness_v3.py
+\end{verbatim}
+
+% ======================================================================
+\begin{thebibliography}{10}
+
+\bibitem{agentflux}
+R.~Kadekodi et~al., ``AgentFlux: Decoupled Fine-Tuning and Inference for On-Device Agentic Systems,'' \textit{arXiv:2510.00229}, 2025.
+
+\bibitem{toollm}
+Y.~Qin et~al., ``ToolLLM: Facilitating Large Language Models to Master 16000+ Real-world APIs,'' \textit{arXiv:2307.16789}, 2023.
+
+\bibitem{gorilla}
+S.~Patil et~al., ``Gorilla: Large Language Model Connected with Massive APIs,'' \textit{arXiv:2305.15334}, 2023.
+
+\bibitem{qwen25}
+Qwen Team, ``Qwen2.5 Technical Report,'' \textit{arXiv:2412.15115}, 2024.
+
+\bibitem{llama3}
+Meta AI, ``Llama 3 Model Card,'' 2024.
+
+\bibitem{tinyllm}
+``TinyLLM: Evaluation and Optimization of Small Language Models for Agentic Tasks on Edge Devices,'' \textit{arXiv:2511.22138}, 2025.
+
+\bibitem{slm_survey}
+``Small Language Models for Agentic Systems: A Survey,'' \textit{arXiv:2510.03847}, 2025.
+
+\bibitem{yantrikdb}
+P.~Sarkar, ``YantrikDB: A Cognitive Memory Engine for Persistent AI Systems,'' Zenodo, DOI:~10.5281/zenodo.18793952, 2026. U.S. Patent Application 19/573,392.
+
+\bibitem{openai_fc}
+OpenAI, ``Function Calling and Structured Outputs,'' OpenAI API Documentation, 2024.
+
+\bibitem{sdf}
+P.~Sarkar, ``Convert Once, Consume Many: SDF for Cacheable, Typed Semantic Extraction from Web Pages,'' Zenodo, DOI:~10.5281/zenodo.18559223, 2026.
+
+\end{thebibliography}
+
+% ======================================================================
+\appendix
+
+\section{Error Taxonomy (1.5B Baseline)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+Error Type & Count (/50) \\
+\midrule
+Correct tool & 25 \\
+Wrong family & 22 \\
+Right family, wrong tool & 3 \\
+No tool call & 20 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+88\% of errors (22/25) are wrong-family errors. Only 12\% (3/25) are within-family disambiguation failures. This confirms that family routing, not tool selection, is the dominant bottleneck.
+
+\section{Six Adaptation Dimensions (YantrikOS)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lllll@{}}
+\toprule
+Dimension & Tiny & Small & Med & Large \\
+\midrule
+Max tools & 3--5 & 5--10 & 8--25 & 50+ \\
+Call format & MCQ & JSON & Native & Native \\
+Slot mode & KV & JSON & JSON & JSON \\
+Family route & Yes & Yes & Yes & Opt. \\
+Context & 512t & 1024t & 2048t & 4096t \\
+Confidence & 0.95 & 0.85 & 0.80 & 0.70 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}

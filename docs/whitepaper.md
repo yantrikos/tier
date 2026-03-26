@@ -121,25 +121,30 @@ We use Ollama's native tool calling API, not text-injected tool descriptions. Ea
 
 ### 5.1 Main Results
 
-**Table 1: Tool Selection Accuracy (%, 50 prompts, 80 native tools)**
+**Table 1a: Filtering and Routing Strategies -- Accuracy (%)**
 
-| Model | Tier | Baseline | Sem-8 | Sem-4 | Family Oracle | Family Det. | Reorder | Reorder+Hint | Hybrid 8+72 |
-|-------|------|----------|-------|-------|--------------|-------------|---------|-------------|-------------|
-| 1.5B | Tiny | 50 | 64 | 64 | 70 | 54 | 54 | 54 | **60** |
-| 9B | Medium | 80 | 72 | 72 | **86** | 64 | -- | -- | -- |
-| 20B | Large | 80 | 70 | 70 | 84 | 58 | 84 | **88** | 76 |
-| 35B | Large | **88** | 76 | 78 | 88 | 64 | -- | -- | -- |
+| Model | Tier | Baseline | Sem-8 | Sem-4 | Fam. Oracle | Fam. Det. |
+|-------|------|----------|-------|-------|-------------|-----------|
+| 1.5B | Tiny | 50 | **64** | 64 | **70** | 54 |
+| 9B | Medium | 80 | 72 | 72 | **86** | 64 |
+| 20B | Large | 80 | 70 | 70 | **84** | 58 |
+| 35B | Large | **88** | 76 | 78 | **88** | 64 |
 
-Note: Reorder, Reorder+Hint, and Hybrid strategies were evaluated on 1.5B and 20B models.
+**Table 1b: Presentation Strategies -- Accuracy (%, 1.5B and 20B)**
+
+| Model | Baseline | Reorder | Reorder+Hint | Hybrid 8+72 |
+|-------|----------|---------|-------------|-------------|
+| 1.5B | 50 | 54 | 54 | **60** |
+| 20B | 80 | 84 | **88** | 76 |
 
 **Table 2: Average Prompt Tokens**
 
-| Model | Baseline | Sem-8 | Family Oracle | Reorder+Hint | Hybrid 8+72 |
-|-------|----------|-------|--------------|-------------|-------------|
-| 1.5B | 3,408 | 444 | 540 | 3,408 | ~1,800 |
-| 9B | 5,272 | 724 | 872 | -- | -- |
-| 20B | 2,143 | 310 | 368 | 2,143 | ~1,200 |
-| 35B | 5,272 | 724 | 872 | -- | -- |
+| Model | Baseline | Sem-8 | Fam. Oracle | Hybrid 8+72 |
+|-------|----------|-------|-------------|-------------|
+| 1.5B | 3,408 | 444 | 540 | ~1,800 |
+| 9B | 5,272 | 724 | 872 | -- |
+| 20B | 2,143 | 310 | 368 | ~1,200 |
+| 35B | 5,272 | 724 | 872 | -- |
 
 ### 5.2 The Decomposition: Family Routing Is the Bottleneck
 
