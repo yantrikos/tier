@@ -14,37 +14,29 @@
 
 Every AI agent framework presents **all tools identically** regardless of model size:
 
-```
-┌─────────────────────────────────────────────────────┐
-│  "Here are your 80 tools"                           │
-│                                                     │
-│  1.5B model: 😵 50% accuracy, 3,400 tokens wasted  │
-│  35B model:  ✓  88% accuracy, handles it fine       │
-└─────────────────────────────────────────────────────┘
-```
+| Model | Tools shown | Accuracy | Tokens wasted |
+|-------|------------|----------|---------------|
+| 1.5B | All 80 | **50%** | 3,400 |
+| 35B | All 80 | **88%** | 3,400 |
 
 A 1.5B model on a Raspberry Pi receives the same tool descriptions as a 35B model on a GPU server. The small model drowns in options. **The model isn't bad at using tools — it's bad at finding them.**
 
 ## The Insight
 
-We decomposed tool selection into two stages:
+Tool selection decomposes into two stages:
 
 ```
 P(correct tool) = P(correct family) × P(correct tool | correct family)
 ```
 
-The results surprised us:
+The results were surprising:
 
-```
-┌──────────┬─────────────────┬──────────────────────┐
-│  Model   │ P(right family) │ P(right tool|family) │
-├──────────┼─────────────────┼──────────────────────┤
-│  1.5B    │      56%        │        89%           │
-│  9B      │      82%        │        98%           │
-│  20B     │      84%        │        95%           │
-│  35B     │      90%        │        98%           │
-└──────────┴─────────────────┴──────────────────────┘
-```
+| Model | P(right family) | P(right tool \| family) |
+|-------|----------------|----------------------|
+| 1.5B | 56% | **89%** |
+| 9B | 82% | **98%** |
+| 20B | 84% | **95%** |
+| 35B | 90% | **98%** |
 
 **Even a 1.5B model picks the right tool 89% of the time — when it's looking in the right neighborhood.** The bottleneck isn't selection, it's navigation.
 
@@ -52,33 +44,15 @@ The results surprised us:
 
 **Adapt the interface, not the model.** Different model sizes get different tool presentations:
 
-```
-                    ┌─────────────────────────────────────┐
-                    │        Same 80 tools                │
-                    └──────────┬──────────────────────────┘
-                               │
-              ┌────────────────┼────────────────┐
-              │                │                │
-        ┌─────▼─────┐   ┌─────▼─────┐   ┌──────▼─────┐
-        │   TINY     │   │   LARGE   │   │     XL     │
-        │  (< 4B)    │   │ (14-35B)  │   │   (35B+)   │
-        ├────────────┤   ├───────────┤   ├────────────┤
-        │ 8 detailed │   │ 80 tools  │   │ 80 tools   │
-        │ + 72 names │   │ reordered │   │ full desc  │
-        │            │   │ + hint    │   │            │
-        │ "Read file"│   │ "Read     │   │ "Read file │
-        │ path: str  │   │  file w/  │   │  with line │
-        │            │   │  encoding │   │  numbers,  │
-        │            │   │  control" │   │  offset,   │
-        │            │   │           │   │  encoding" │
-        └────────────┘   └───────────┘   └────────────┘
-              │                │                │
-           60%             88%              88%
-         accuracy        accuracy          accuracy
-        (+10pp)          (+8pp)           (baseline)
-         97% fewer       same              same
-          tokens         tokens            tokens
-```
+### Same 80 tools, three different presentations:
+
+| | **Tiny** (< 4B) | **Large** (14-35B) | **XL** (35B+) |
+|---|---|---|---|
+| **Strategy** | Hybrid | Reorder + hint | Full |
+| **What model sees** | 8 detailed + 72 name-only | All 80, relevance-sorted | All 80, full descriptions |
+| **file_read** | `"Read file"` `path: str` | `"Read file with encoding control"` `path, encoding, lines` | `"Read file with line numbers, offset, encoding"` `path, encoding, lines, offset, limit` |
+| **Accuracy** | **60%** (+10pp) | **88%** (+8pp) | **88%** (baseline) |
+| **Tokens** | 97% fewer | same | same |
 
 ## Results
 
