@@ -10,6 +10,13 @@
 
 ---
 
+```bash
+pip install yantrikos-sdk          # the SDK
+openclaw plugins install tier      # or the OpenClaw plugin
+```
+
+Full setup in [Quick Start](#quick-start).
+
 ## The Problem
 
 Every AI agent framework presents **all tools identically** regardless of model size:
@@ -275,6 +282,22 @@ Raw results (1,000+ data points): [`benchmarks/results_v3_full.jsonl`](benchmark
   url       = {https://zenodo.org/records/19228710}
 }
 ```
+
+## Related projects
+
+Other agent infrastructure by the same author:
+
+- [contextcache](https://github.com/spranab/contextcache) — the other half of
+  the tool-cost problem: cache the KV states of tool schemas so they aren't
+  re-prefilled on every request.
+- [yantrikdb](https://github.com/yantrikos/yantrikdb) — cognitive memory
+  engine for agents: temporal decay, contradiction detection, consolidation.
+- [yantrikdb-mcp](https://github.com/yantrikos/yantrikdb-mcp) — that memory as
+  an MCP server for Claude Code, Cursor and Windsurf.
+- [yantrik-memory](https://github.com/yantrikos/yantrik-memory) —
+  framework-agnostic Python memory layer with traits and bond evolution.
+- [truenas-mcp](https://github.com/spranab/truenas-mcp) — 278 actions behind
+  one hierarchical MCP tool; the same "don't show the model everything" idea.
 
 ## License
 

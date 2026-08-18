@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tier-engine"
 version = "0.2.0"
-description = "Tier-based tool routing for AI agents"
+description = "Adaptive tool routing for AI agents — present the same tools differently by model size: +10pp tool-selection accuracy and 97% fewer tool tokens on sub-4B models"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = ["yantrikos-sdk>=0.1.0"]
