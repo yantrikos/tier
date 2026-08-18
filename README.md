@@ -11,11 +11,11 @@
 ---
 
 ```bash
-pip install yantrikos-sdk          # the SDK
-openclaw plugins install tier      # or the OpenClaw plugin
+pip install yantrikos-sdk
 ```
 
-Full setup in [Quick Start](#quick-start).
+Full setup in [Quick Start](#quick-start); the OpenClaw integration is a code
+plugin on [ClawHub](https://clawhub.ai) — see [Production](#openclaw-plugin).
 
 ## The Problem
 
