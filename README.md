@@ -17,6 +17,25 @@ pip install yantrikos-sdk
 Full setup in [Quick Start](#quick-start); the OpenClaw integration is a code
 plugin on [ClawHub](https://clawhub.ai) — see [Production](#openclaw-plugin).
 
+### 30-second example
+
+```python
+from yantrikos import BaseTool, Tier, register
+
+@register
+class FileReadTool(BaseTool):
+    name = "file_read"
+    descriptions = {
+        Tier.S:  "Read file",                                     # 1.5B model
+        Tier.XL: "Read file with line numbers, offset, encoding",  # GPT-4o
+    }
+    def execute(self, input: dict, tier: Tier) -> ToolResult:
+        return ToolResult.ok(open(input["path"]).read())
+```
+
+One tool definition, a different face per model tier. Full walkthrough in
+[Quick Start](#quick-start).
+
 ## The Problem
 
 Every AI agent framework presents **all tools identically** regardless of model size:

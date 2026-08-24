@@ -8,6 +8,16 @@ description = "Adaptive tool routing for AI agents — present the same tools di
 license = {text = "MIT"}
 requires-python = ">=3.10"
 dependencies = ["yantrikos-sdk>=0.1.0"]
+keywords = ["ai-agents", "tool-routing", "tool-calling", "function-calling", "llm", "local-llm", "mcp", "small-language-models", "benchmark"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
 [project.urls]
 Homepage = "https://github.com/yantrikos/tier"
 [tool.setuptools.packages.find]
